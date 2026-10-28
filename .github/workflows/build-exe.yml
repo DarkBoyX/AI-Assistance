@@ -40,10 +40,26 @@ jobs:
           }
 
       - name: Install dependencies
+        shell: pwsh
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Bulk install failed, installing one by one"
+            foreach ($line in Get-Content requirements.txt) {
+              $l = $line.Trim()
+              if ($l -and -not $l.StartsWith("#")) {
+                pip install "$l"
+                if ($LASTEXITCODE -ne 0) { Write-Host "FAILED TO INSTALL: $l" }
+              }
+            }
+          }
           pip install pillow pyinstaller
+
+      - name: Verify libraries are installed
+        shell: pwsh
+        run: |
+          python -c "import PySide6, numpy, sounddevice, faster_whisper, edge_tts, httpx, keyring, psutil, pyautogui, pyperclip, mss, PIL, send2trash, bs4, win32api; print('All libraries OK')"
 
       - name: Make icon
         run: python tools_dev/make_icon.py
@@ -56,6 +72,15 @@ jobs:
           } else {
             python -m PyInstaller main.py --name Vega --noconfirm --clean --windowed --icon assets/vega.ico --add-data "assets;assets" --collect-submodules vega --collect-all faster_whisper --collect-all ctranslate2 --collect-all onnxruntime --collect-all av --collect-all tokenizers --collect-all edge_tts --collect-all sounddevice --collect-all keyring --collect-all pyautogui --hidden-import win32timezone --hidden-import pythoncom --hidden-import pywintypes --hidden-import win32com.client --hidden-import keyring.backends.Windows
           }
+
+      - name: Check the build is complete
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist/Vega/_internal/PySide6")) {
+            Write-Host "ERROR: PySide6 was not bundled into the exe"
+            exit 1
+          }
+          Write-Host "Build looks complete"
 
       - name: Zip the build
         shell: pwsh
