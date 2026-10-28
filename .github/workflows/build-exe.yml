@@ -19,9 +19,25 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Show repo files
+      - name: Fix project layout
         shell: pwsh
-        run: Get-ChildItem -Name
+        run: |
+          Write-Host "Repo root contains:"
+          Get-ChildItem -Name
+          if (-not (Test-Path "main.py")) {
+            $found = Get-ChildItem -Recurse -Filter main.py -File | Where-Object { $_.FullName -notmatch "\\.github\\" } | Select-Object -First 1
+            if ($found) {
+              Write-Host "Found project in $($found.DirectoryName), copying it to the root"
+              Copy-Item -Path (Join-Path $found.DirectoryName "*") -Destination . -Recurse -Force
+            } else {
+              Write-Host "main.py not found anywhere, recreating it"
+              Set-Content -Path main.py -Value "import sys`nfrom vega.app import main`n`nif __name__ == '__main__':`n    sys.exit(main())"
+            }
+          }
+          if (-not (Test-Path "vega/app.py")) {
+            Write-Host "ERROR: vega/app.py is missing. The vega folder was not uploaded correctly."
+            exit 1
+          }
 
       - name: Install dependencies
         run: |
@@ -32,36 +48,14 @@ jobs:
       - name: Make icon
         run: python tools_dev/make_icon.py
 
-      - name: Make sure vega.spec exists
+      - name: Build exe
         shell: pwsh
         run: |
-          if (-not (Test-Path "vega.spec")) {
-            Write-Host "vega.spec missing, recreating it"
-            @'
-          # PyInstaller spec
-          from PyInstaller.utils.hooks import collect_all, collect_submodules
-
-          datas, binaries, hidden = [("assets", "assets")], [], []
-          for pkg in ("faster_whisper", "ctranslate2", "onnxruntime", "av", "tokenizers", "edge_tts", "sounddevice",
-                      "_sounddevice_data", "keyring", "certifi", "pyautogui", "pyscreeze", "pytweening", "pymsgbox", "mouseinfo"):
-              try:
-                  d, b, h = collect_all(pkg)
-                  datas += d; binaries += b; hidden += h
-              except Exception:
-                  pass
-          hidden += collect_submodules("vega") + ["win32timezone", "pythoncom", "pywintypes", "win32com.client",
-                                                   "keyring.backends.Windows", "PySide6.QtMultimedia"]
-
-          a = Analysis(["main.py"], pathex=["."], binaries=binaries, datas=datas, hiddenimports=hidden,
-                       excludes=["tkinter", "matplotlib", "pytest"], noarchive=False)
-          pyz = PYZ(a.pure)
-          exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="Vega", console=False, icon="assets/vega.ico")
-          coll = COLLECT(exe, a.binaries, a.datas, name="Vega")
-          '@ | Set-Content -Path vega.spec -Encoding utf8
+          if (Test-Path "vega.spec") {
+            python -m PyInstaller vega.spec --noconfirm --clean
+          } else {
+            python -m PyInstaller main.py --name Vega --noconfirm --clean --windowed --icon assets/vega.ico --add-data "assets;assets" --collect-submodules vega --collect-all faster_whisper --collect-all ctranslate2 --collect-all onnxruntime --collect-all av --collect-all tokenizers --collect-all edge_tts --collect-all sounddevice --collect-all keyring --collect-all pyautogui --hidden-import win32timezone --hidden-import pythoncom --hidden-import pywintypes --hidden-import win32com.client --hidden-import keyring.backends.Windows
           }
-
-      - name: Build exe
-        run: python -m PyInstaller vega.spec --noconfirm --clean
 
       - name: Zip the build
         shell: pwsh
