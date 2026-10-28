@@ -24,45 +24,71 @@ jobs:
         run: |
           Write-Host "Repo root contains:"
           Get-ChildItem -Name
-          if (-not (Test-Path "main.py")) {
-            $found = Get-ChildItem -Recurse -Filter main.py -File | Where-Object { $_.FullName -notmatch "\\.github\\" } | Select-Object -First 1
+
+          if (-not (Test-Path "requirements.txt") -or -not (Test-Path "main.py")) {
+            $found = Get-ChildItem -Recurse -Filter requirements.txt -File | Where-Object { $_.FullName -notmatch '\\\.github\\' } | Select-Object -First 1
             if ($found) {
               Write-Host "Found project in $($found.DirectoryName), copying it to the root"
               Copy-Item -Path (Join-Path $found.DirectoryName "*") -Destination . -Recurse -Force
-            } else {
-              Write-Host "main.py not found anywhere, recreating it"
-              Set-Content -Path main.py -Value "import sys`nfrom vega.app import main`n`nif __name__ == '__main__':`n    sys.exit(main())"
             }
           }
+
+          if (-not (Test-Path "requirements.txt")) {
+            Write-Host "requirements.txt missing, recreating it"
+            @(
+              'PySide6>=6.6',
+              'numpy>=1.26',
+              'sounddevice>=0.4.6',
+              'faster-whisper>=1.0.3',
+              'edge-tts>=6.1.12',
+              'httpx>=0.27',
+              'keyring>=25.0',
+              'psutil>=5.9',
+              'pyautogui>=0.9.54',
+              'pyperclip>=1.8.2',
+              'mss>=9.0',
+              'Pillow>=10.0',
+              'send2trash>=1.8',
+              'beautifulsoup4>=4.12',
+              'pywin32>=306; sys_platform == "win32"'
+            ) | Set-Content -Path requirements.txt -Encoding ascii
+          }
+
+          if (-not (Test-Path "main.py")) {
+            Write-Host "main.py missing, recreating it"
+            Set-Content -Path main.py -Value "import sys`nfrom vega.app import main`n`nif __name__ == '__main__':`n    sys.exit(main())"
+          }
+
           if (-not (Test-Path "vega/app.py")) {
             Write-Host "ERROR: vega/app.py is missing. The vega folder was not uploaded correctly."
             exit 1
           }
 
+          Write-Host "Layout OK"
+
       - name: Install dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "Bulk install failed, installing one by one"
-            foreach ($line in Get-Content requirements.txt) {
-              $l = $line.Trim()
-              if ($l -and -not $l.StartsWith("#")) {
-                pip install "$l"
-                if ($LASTEXITCODE -ne 0) { Write-Host "FAILED TO INSTALL: $l" }
-              }
-            }
-          }
-          pip install pillow pyinstaller
+          python -m pip install -r requirements.txt
+          if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: requirements failed to install"; exit 1 }
+          python -m pip install pillow pyinstaller
+          if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: pillow/pyinstaller failed to install"; exit 1 }
 
       - name: Verify libraries are installed
         shell: pwsh
         run: |
           python -c "import PySide6, numpy, sounddevice, faster_whisper, edge_tts, httpx, keyring, psutil, pyautogui, pyperclip, mss, PIL, send2trash, bs4, win32api; print('All libraries OK')"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Make icon
-        run: python tools_dev/make_icon.py
+        shell: pwsh
+        run: |
+          if (Test-Path "tools_dev/make_icon.py") {
+            python tools_dev/make_icon.py
+          } else {
+            Write-Host "make_icon.py missing, skipping icon"
+          }
 
       - name: Build exe
         shell: pwsh
@@ -70,8 +96,13 @@ jobs:
           if (Test-Path "vega.spec") {
             python -m PyInstaller vega.spec --noconfirm --clean
           } else {
-            python -m PyInstaller main.py --name Vega --noconfirm --clean --windowed --icon assets/vega.ico --add-data "assets;assets" --collect-submodules vega --collect-all faster_whisper --collect-all ctranslate2 --collect-all onnxruntime --collect-all av --collect-all tokenizers --collect-all edge_tts --collect-all sounddevice --collect-all keyring --collect-all pyautogui --hidden-import win32timezone --hidden-import pythoncom --hidden-import pywintypes --hidden-import win32com.client --hidden-import keyring.backends.Windows
+            $icon = @()
+            if (Test-Path "assets/vega.ico") { $icon = @("--icon", "assets/vega.ico") }
+            $assets = @()
+            if (Test-Path "assets") { $assets = @("--add-data", "assets;assets") }
+            python -m PyInstaller main.py --name Vega --noconfirm --clean --windowed @icon @assets --collect-submodules vega --collect-all faster_whisper --collect-all ctranslate2 --collect-all onnxruntime --collect-all av --collect-all tokenizers --collect-all edge_tts --collect-all sounddevice --collect-all keyring --collect-all pyautogui --hidden-import win32timezone --hidden-import pythoncom --hidden-import pywintypes --hidden-import win32com.client --hidden-import keyring.backends.Windows
           }
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Check the build is complete
         shell: pwsh
