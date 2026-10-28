@@ -81,6 +81,15 @@ jobs:
           python -c "import PySide6, numpy, sounddevice, faster_whisper, edge_tts, httpx, keyring, psutil, pyautogui, pyperclip, mss, PIL, send2trash, bs4, win32api; print('All libraries OK')"
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
+      - name: Check Vega code imports
+        shell: pwsh
+        run: |
+          Write-Host "Python files found in vega/:"
+          Get-ChildItem vega -Recurse -Filter *.py | ForEach-Object { Write-Host (" " + $_.FullName.Substring($PWD.Path.Length + 1)) }
+          $env:QT_QPA_PLATFORM = "offscreen"
+          python -c "import vega.app; print('vega imports OK')"
+          if ($LASTEXITCODE -ne 0) { Write-Host "ERROR: the app code fails to import, see above"; exit 1 }
+
       - name: Make icon
         shell: pwsh
         run: |
@@ -90,28 +99,79 @@ jobs:
             Write-Host "make_icon.py missing, skipping icon"
           }
 
+      - name: Write build spec
+        shell: pwsh
+        run: |
+          @'
+          import os
+
+          datas, binaries, hidden = [], [], []
+          if os.path.isdir("assets"):
+              datas.append(("assets", "assets"))
+
+          # list every vega module by hand so none can be missed
+          for root, dirs, files in os.walk("vega"):
+              for f in files:
+                  if f.endswith(".py"):
+                      name = os.path.join(root, f)[:-3].replace(os.sep, ".")
+                      if name.endswith(".__init__"):
+                          name = name[:-9]
+                      hidden.append(name)
+          print("Vega modules included:", sorted(hidden))
+
+          from PyInstaller.utils.hooks import collect_all
+          for pkg in ("faster_whisper", "ctranslate2", "onnxruntime", "av", "tokenizers", "edge_tts",
+                      "sounddevice", "_sounddevice_data", "keyring", "certifi", "pyautogui",
+                      "pyscreeze", "pytweening", "pymsgbox", "mouseinfo"):
+              try:
+                  d, b, h = collect_all(pkg)
+                  datas += d
+                  binaries += b
+                  hidden += h
+              except Exception as e:
+                  print("skip", pkg, e)
+
+          hidden += ["win32timezone", "pythoncom", "pywintypes", "win32com.client",
+                     "keyring.backends.Windows", "PySide6.QtMultimedia"]
+
+          icon = "assets/vega.ico" if os.path.exists("assets/vega.ico") else None
+
+          a = Analysis(["main.py"], pathex=[os.getcwd()], binaries=binaries, datas=datas,
+                       hiddenimports=hidden, excludes=["tkinter", "matplotlib", "pytest"], noarchive=False)
+          pyz = PYZ(a.pure)
+          exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="Vega", console=False, icon=icon)
+          coll = COLLECT(exe, a.binaries, a.datas, name="Vega")
+          '@ | Set-Content -Path ci.spec -Encoding utf8
+
       - name: Build exe
         shell: pwsh
         run: |
-          if (Test-Path "vega.spec") {
-            python -m PyInstaller vega.spec --noconfirm --clean
-          } else {
-            $icon = @()
-            if (Test-Path "assets/vega.ico") { $icon = @("--icon", "assets/vega.ico") }
-            $assets = @()
-            if (Test-Path "assets") { $assets = @("--add-data", "assets;assets") }
-            python -m PyInstaller main.py --name Vega --noconfirm --clean --windowed @icon @assets --collect-submodules vega --collect-all faster_whisper --collect-all ctranslate2 --collect-all onnxruntime --collect-all av --collect-all tokenizers --collect-all edge_tts --collect-all sounddevice --collect-all keyring --collect-all pyautogui --hidden-import win32timezone --hidden-import pythoncom --hidden-import pywintypes --hidden-import win32com.client --hidden-import keyring.backends.Windows
-          }
+          python -m PyInstaller ci.spec --noconfirm --clean
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
-      - name: Check the build is complete
+      - name: Check every Vega file made it into the exe
         shell: pwsh
         run: |
           if (-not (Test-Path "dist/Vega/_internal/PySide6")) {
             Write-Host "ERROR: PySide6 was not bundled into the exe"
             exit 1
           }
-          Write-Host "Build looks complete"
+          $toc = Get-ChildItem -Recurse build -Filter PYZ-00.toc | Select-Object -First 1
+          if (-not $toc) { Write-Host "ERROR: could not find the build contents list"; exit 1 }
+          $text = Get-Content $toc.FullName -Raw
+          $missing = @()
+          foreach ($f in Get-ChildItem vega -Recurse -Filter *.py) {
+            $name = $f.FullName.Substring($PWD.Path.Length + 1).Replace("\", ".").Replace("/", ".")
+            $name = $name.Substring(0, $name.Length - 3)
+            if ($name.EndsWith(".__init__")) { $name = $name.Substring(0, $name.Length - 9) }
+            if ($text -notmatch [regex]::Escape("'$name'")) { $missing += $name }
+          }
+          if ($missing.Count -gt 0) {
+            Write-Host "ERROR: these Vega modules did NOT get packed into the exe:"
+            $missing | ForEach-Object { Write-Host (" - " + $_) }
+            exit 1
+          }
+          Write-Host "All Vega modules are inside the exe"
 
       - name: Zip the build
         shell: pwsh
